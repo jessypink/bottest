@@ -2,8 +2,8 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
 # Команда start
-async def start(update Update, context ContextTypes.DEFAULT_TYPE)
-    await update.message.reply_text(Привет! Я простой эхо-бот. Пиши что угодно, и я повторю.)
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE)
+    await update.message.reply_text("Привет! Я простой эхо-бот. Пиши что угодно, и я повторю.")
 
 # Основной обработчик сообщений
 async def echo(update Update, context ContextTypes.DEFAULT_TYPE)
@@ -19,4 +19,5 @@ if __name__ == __main__
 
     print(Бот запущен...)
     app.run_polling()
+
 
