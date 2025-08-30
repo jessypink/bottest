@@ -1,61 +1,148 @@
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
-from gtts import gTTS
-import speech_recognition as sr
-import os
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
+import random
 
-# Папка для временных файлов
-TEMP_DIR = r"C:\CloudTG"
-os.makedirs(TEMP_DIR, exist_ok=True)
+# Хранение игроков
+players = {}
 
-# Команда /start
+# Начало игры
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    players[user_id] = {
+        "hp": 20,
+        "gold": 0,
+        "potions": 1,
+        "stage": "intro"
+    }
+
     await update.message.reply_text(
-        "Привет! Я бот TTS/STT.\n"
-        "- Отправь текст, и я превращу его в аудио.\n"
-        "- Отправь голосовое сообщение, и я расшифрую его в текст."
+        "🌌 Ты очнулся у входа в древнее подземелье.\n"
+        "Говорят, внутри хранится сокровище, но его охраняет тёмный владыка...\n"
+        "Что будешь делать?",
+        reply_markup=choices_intro()
     )
 
-# Превращаем текст в речь
-async def text_to_speech(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_text = update.message.text
-    tts = gTTS(text=user_text, lang='ru')
-    file_path = os.path.join(TEMP_DIR, "tts.mp3")
-    tts.save(file_path)
-    await update.message.reply_audio(open(file_path, 'rb'))
-    os.remove(file_path)
+# Главное меню выбора
+def choices_intro():
+    keyboard = [
+        [InlineKeyboardButton("⚔ Войти в подземелье", callback_data="enter")],
+        [InlineKeyboardButton("🏃 Уйти домой", callback_data="leave")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
 
-# Распознаём голос в текст
-async def speech_to_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    voice = await update.message.voice.get_file()
-    file_path = os.path.join(TEMP_DIR, "voice.ogg")
-    await voice.download_to_drive(file_path)
+# Меню боёв
+def choices_battle():
+    keyboard = [
+        [InlineKeyboardButton("🗡 Атаковать", callback_data="attack")],
+        [InlineKeyboardButton("🍷 Использовать зелье", callback_data="potion")],
+        [InlineKeyboardButton("🏃 Сбежать", callback_data="run")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
 
-    # Конвертируем OGG в WAV через ffmpeg (нужно установить ffmpeg)
-    wav_path = os.path.join(TEMP_DIR, "voice.wav")
-    os.system(f'ffmpeg -i "{file_path}" "{wav_path}" -y')
-    os.remove(file_path)
+# Кнопки после победы
+def choices_after_battle():
+    keyboard = [
+        [InlineKeyboardButton("➡ Дальше", callback_data="next_stage")],
+        [InlineKeyboardButton("🎒 Инвентарь", callback_data="inventory")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
 
-    recognizer = sr.Recognizer()
-    with sr.AudioFile(wav_path) as source:
-        audio = recognizer.record(source)
-    os.remove(wav_path)
+# Обработка кнопок
+async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    player = players.get(user_id)
 
-    try:
-        text = recognizer.recognize_google(audio, language="ru-RU")
-        await update.message.reply_text(f"Я распознал: {text}")
-    except sr.UnknownValueError:
-        await update.message.reply_text("Не удалось распознать речь.")
-    except sr.RequestError:
-        await update.message.reply_text("Ошибка сервиса распознавания.")
+    if not player:
+        await query.edit_message_text("Сначала напиши /start")
+        return
+
+    # --- ВСТУПЛЕНИЕ ---
+    if query.data == "enter" and player["stage"] == "intro":
+        player["stage"] = "monster1"
+        await query.edit_message_text(
+            "Ты заходишь внутрь... 👣\n"
+            "Из тени выпрыгивает первый монстр — Гоблин!",
+            reply_markup=choices_battle()
+        )
+        player["monster_hp"] = 10
+
+    elif query.data == "leave" and player["stage"] == "intro":
+        players.pop(user_id)
+        await query.edit_message_text("Ты решил не рисковать и ушёл домой. 🏡 Конец игры.")
+
+    # --- БОЙ ---
+    elif query.data == "attack":
+        dmg = random.randint(3, 6)
+        player["monster_hp"] -= dmg
+        if player["monster_hp"] <= 0:
+            player["gold"] += 5
+            text = f"🎉 Ты победил врага и получил 5 золота!\nТекущие HP: {player['hp']}"
+            player["stage"] = "after_battle"
+            await query.edit_message_text(text, reply_markup=choices_after_battle())
+        else:
+            # Монстр бьет
+            mdmg = random.randint(2, 5)
+            player["hp"] -= mdmg
+            if player["hp"] <= 0:
+                players.pop(user_id)
+                await query.edit_message_text("☠️ Монстр оказался сильнее... Ты погиб.")
+            else:
+                await query.edit_message_text(
+                    f"Ты ударил монстра на {dmg} урона!\n"
+                    f"Монстр атаковал и снял {mdmg} HP.\n"
+                    f"Твои HP: {player['hp']} | HP монстра: {player['monster_hp']}",
+                    reply_markup=choices_battle()
+                )
+
+    elif query.data == "potion":
+        if player["potions"] > 0:
+            player["hp"] = min(20, player["hp"] + 8)
+            player["potions"] -= 1
+            await query.edit_message_text(
+                f"🍷 Ты выпил зелье. HP: {player['hp']} | Зелий осталось: {player['potions']}",
+                reply_markup=choices_battle()
+            )
+        else:
+            await query.edit_message_text("❌ У тебя нет зелий!", reply_markup=choices_battle())
+
+    elif query.data == "run":
+        player["stage"] = "intro"
+        await query.edit_message_text("Ты сбежал обратно ко входу. 🚪", reply_markup=choices_intro())
+
+    # --- ПОСЛЕ БИТВЫ ---
+    elif query.data == "next_stage" and player["stage"] == "after_battle":
+        player["stage"] = "boss"
+        player["monster_hp"] = 20
+        await query.edit_message_text(
+            "Ты идёшь дальше по тёмному коридору... 🔦\n"
+            "Внезапно воздух становится тяжёлым. Перед тобой появляется ТЁМНЫЙ ВЛАДЫКА! 👹",
+            reply_markup=choices_battle()
+        )
+
+    elif query.data == "inventory":
+        await query.edit_message_text(
+            f"🎒 Инвентарь:\nHP: {player['hp']}\nЗолото: {player['gold']}\nЗелья: {player['potions']}",
+            reply_markup=choices_after_battle()
+        )
+
+    # --- ФИНАЛ ---
+    if player.get("stage") == "boss" and player["hp"] > 0 and player["monster_hp"] <= 0:
+        await query.edit_message_text(
+            "🔥 Ты победил Тёмного Владыку!\n"
+            "В сокровищнице ты находишь сундук с золотом и артефакт.\n"
+            "🌟 Поздравляем, герой! Ты прошёл подземелье!",
+        )
+        players.pop(user_id)
+
 
 if __name__ == "__main__":
     TOKEN = "5510933125:AAFpVK0ndCpCh548sdx02-Bx0BcUHz8iJI4"
     app = ApplicationBuilder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_to_speech))
-    app.add_handler(MessageHandler(filters.VOICE, speech_to_text))
+    app.add_handler(CallbackQueryHandler(button))
 
-    print("Бот запущен…")
+    print("RPG-бот с сюжетом запущен…")
     app.run_polling()
